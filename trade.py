@@ -1,4 +1,4 @@
-import MetaTrader5 as mt5
+from mt5linux import MetaTrader5 as mt5
 
 def execute_trade(action, symbol="EURUSD", lot=0.01):
     # 1. Safely connect to MT5

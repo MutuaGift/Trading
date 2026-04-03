@@ -1,5 +1,5 @@
 import streamlit as st
-import MetaTrader5 as mt5
+from mt5linux import MetaTrader5 as mt5
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime

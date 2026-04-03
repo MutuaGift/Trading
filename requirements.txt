@@ -1,0 +1,9 @@
+mt5linux
+pandas
+numpy
+scikit-learn
+joblib
+streamlit
+requests
+plotly
+ccxt

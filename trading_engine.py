@@ -1,4 +1,4 @@
-import MetaTrader5 as mt5
+from mt5linux import MetaTrader5 as mt5
 from config import *
 from datetime import datetime
 
