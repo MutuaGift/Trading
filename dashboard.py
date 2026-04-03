@@ -3,9 +3,11 @@ from mt5linux import MetaTrader5 as mt5
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
-import ccxt 
 import joblib
 import numpy as np
+import os
+
+from config import SYMBOLS, CONFIDENCE_THRESHOLD
 
 # -------- PAGE CONFIG & STYLING --------
 st.set_page_config(page_title="AI Trading Dashboard", layout="wide")
@@ -26,140 +28,170 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# -------- LOAD AI MODEL --------
-try:
-    model = joblib.load("model.pkl")
-except FileNotFoundError:
-    st.error("🚨 model.pkl not found! Make sure it is in the exact same folder as this Python file.")
-    st.stop()
+# -------- TIMEFRAME MAP --------
+TIMEFRAME_MAP = {
+    "M1":  mt5.TIMEFRAME_M1,
+    "M5":  mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": mt5.TIMEFRAME_M30,
+    "H1":  mt5.TIMEFRAME_H1,
+    "H4":  mt5.TIMEFRAME_H4,
+    "D1":  mt5.TIMEFRAME_D1,
+}
 
-# -------- SETTINGS --------
-MT5_SYMBOLS = ["EURUSD", "GBPUSD", "XAUUSD"] 
-CRYPTO_SYMBOLS = ["BTC/USDT", "ETH/USDT"]    
-TIMEFRAME = mt5.TIMEFRAME_M5
+# -------- LOAD MODELS (one per symbol) --------
+models = {}
+for symbol in SYMBOLS:
+    model_file = f"{symbol}_model.pkl"
+    if os.path.exists(model_file):
+        models[symbol] = joblib.load(model_file)
+    else:
+        st.warning(f"No model file for {symbol} ({model_file}). Train models first.")
 
-# -------- INIT --------
+# -------- INIT MT5 --------
 if not mt5.initialize():
     st.error("MT5 not connected")
     st.stop()
 
-exchange = ccxt.binance()
-
-st.title("🧠 AI PRO Trading Terminal")
+st.title("AI PRO Trading Terminal")
 st.divider()
 
-# -------- ACCOUNT INFO (MT5) --------
+# -------- ACCOUNT INFO --------
 account = mt5.account_info()
 col1, col2, col3 = st.columns(3)
-col1.metric("MT5 Balance", f"${account.balance:.2f}")
-col2.metric("MT5 Equity", f"${account.equity:.2f}")
-col3.metric("MT5 Open Trades", mt5.positions_total())
+col1.metric("Balance",     f"${account.balance:.2f}")
+col2.metric("Equity",      f"${account.equity:.2f}")
+col3.metric("Open Trades", mt5.positions_total())
 st.divider()
 
-# -------- DATA & INDICATOR FUNCTIONS --------
+# -------- HELPER FUNCTIONS --------
 def calculate_indicators(df):
-    # Features for your ML model
+    df = df.copy()
     df['ma_fast'] = df['close'].rolling(20).mean()
     df['ma_slow'] = df['close'].rolling(50).mean()
-    
-    # Calculate 14-period RSI
     delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
+    gain  = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss  = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs    = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
-    
-    # Drop rows with NaN values so we don't feed garbage to the AI
     df.dropna(inplace=True)
     return df
 
-def get_mt5_data(symbol):
-    # Pulled 150 candles so we still have 100 left after calculating indicators
-    rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME, 0, 150) 
-    if rates is None: return None
+def get_mt5_data(symbol, timeframe_str):
+    timeframe = TIMEFRAME_MAP.get(timeframe_str, mt5.TIMEFRAME_M15)
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 150)
+    if rates is None:
+        return None
     df = pd.DataFrame(rates)
-    if df.empty: return None
+    if df.empty:
+        return None
     df['time'] = pd.to_datetime(df['time'], unit='s')
     return calculate_indicators(df)
 
-def get_crypto_data(symbol):
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=150)
-        df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
-        df['time'] = pd.to_datetime(df['time'], unit='ms')
-        return calculate_indicators(df)
-    except Exception as e:
-        return None
-
-# -------- AI PREDICTION FUNCTION --------
-def get_signal(df):
-    # Grab the very last row of data (the current live candle)
+def get_signal_and_confidence(symbol, df):
+    if symbol not in models:
+        return "N/A", 0.0
+    model = models[symbol]
     last = df.iloc[-1]
-    
-    # Extract the three features your model needs
-    current_rsi = last['rsi']
-    current_ma_fast = last['ma_fast']
-    current_ma_slow = last['ma_slow']
-    
-    # Feed it to the AI
-    features = np.array([current_rsi, current_ma_fast, current_ma_slow]).reshape(1, -1)
-    prediction = model.predict(features)
+    features = np.array([last['rsi'], last['ma_fast'], last['ma_slow']]).reshape(1, -1)
+    proba      = model.predict_proba(features)[0]
+    confidence = max(proba)
+    prediction = model.predict(features)[0]
+    if confidence < CONFIDENCE_THRESHOLD:
+        return "WEAK", confidence
+    return "BUY" if prediction == 1 else "SELL", confidence
 
-    if prediction[0] == 1:
-        return "BUY"
-    else:
-        return "SELL"
+def get_open_position(symbol):
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None or len(positions) == 0:
+        return None
+    return positions[0]
 
-# -------- CHART GRID --------
-ALL_SYMBOLS = MT5_SYMBOLS + CRYPTO_SYMBOLS
-cols = st.columns(len(ALL_SYMBOLS))
+def get_recent_trades(symbol, n=5):
+    history = mt5.history_deals_get(
+        datetime(2000, 1, 1),
+        datetime.now(),
+        group=f"*{symbol}*",
+    )
+    if history is None or len(history) == 0:
+        return pd.DataFrame()
+    df = pd.DataFrame(list(history), columns=history[0]._asdict().keys())
+    df = df[df['symbol'] == symbol].tail(n)
+    return df[['time', 'type', 'volume', 'price', 'profit']].copy() if not df.empty else pd.DataFrame()
 
-for i, symbol in enumerate(ALL_SYMBOLS):
-    with cols[i]:
-        st.subheader(symbol)
+# -------- PER-SYMBOL TABS --------
+tabs = st.tabs(list(SYMBOLS.keys()))
 
-        if "/" in symbol:
-            df = get_crypto_data(symbol)
-        else:
-            df = get_mt5_data(symbol)
+for tab, (symbol, cfg) in zip(tabs, SYMBOLS.items()):
+    with tab:
+        st.subheader(f"{symbol}  |  {cfg['timeframe']}")
+
+        df = get_mt5_data(symbol, cfg["timeframe"])
 
         if df is None or df.empty:
-            st.warning("No data")
+            st.warning(f"No data available for {symbol}.")
             continue
 
-        # Get signal from your AI Model
-        signal = get_signal(df)
+        signal, confidence = get_signal_and_confidence(symbol, df)
+        position = get_open_position(symbol)
 
+        # -------- METRICS ROW --------
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Signal",     signal)
+        m2.metric("Confidence", f"{confidence * 100:.1f}%")
+        m3.metric("Open Trade", "YES" if position else "NO")
+        if position:
+            m4.metric("Unrealized P&L", f"${position.profit:.2f}")
+        else:
+            m4.metric("Unrealized P&L", "-")
+
+        # -------- SIGNAL BADGE --------
         if signal == "BUY":
-            st.success("🟢 AI SIGNAL: BUY")
+            st.success("AI SIGNAL: BUY")
         elif signal == "SELL":
-            st.error("🔴 AI SIGNAL: SELL")
+            st.error("AI SIGNAL: SELL")
+        elif signal == "WEAK":
+            st.warning(f"Signal too weak (confidence={confidence:.2f}). No trade.")
+        else:
+            st.info(f"No model loaded for {symbol}.")
 
-        # -------- STYLED CHART --------
+        # -------- CANDLESTICK CHART --------
         fig = go.Figure()
-        
         fig.add_trace(go.Candlestick(
-            x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-            increasing_line_color='#00FFAA', increasing_fillcolor='#00FFAA', 
-            decreasing_line_color='#FF3366', decreasing_fillcolor='#FF3366'  
+            x=df['time'],
+            open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+            increasing_line_color='#00FFAA', increasing_fillcolor='#00FFAA',
+            decreasing_line_color='#FF3366', decreasing_fillcolor='#FF3366',
         ))
-        
-        # Draw the updated MAs
-        fig.add_trace(go.Scatter(x=df['time'], y=df['ma_fast'], name="MA Fast", line=dict(color='#00BFFF', width=1.5)))
-        fig.add_trace(go.Scatter(x=df['time'], y=df['ma_slow'], name="MA Slow", line=dict(color='#FFD700', width=1.5)))
-        
+        fig.add_trace(go.Scatter(
+            x=df['time'], y=df['ma_fast'], name="MA Fast",
+            line=dict(color='#00BFFF', width=1.5)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df['time'], y=df['ma_slow'], name="MA Slow",
+            line=dict(color='#FFD700', width=1.5)
+        ))
         fig.update_layout(
             template="plotly_dark",
-            paper_bgcolor='rgba(0,0,0,0)', 
+            paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             margin=dict(l=0, r=0, t=10, b=0),
-            showlegend=False,
+            showlegend=True,
             xaxis=dict(showgrid=False, zeroline=False),
-            yaxis=dict(showgrid=True, gridcolor='#333333', zeroline=False)
+            yaxis=dict(showgrid=True, gridcolor='#333333', zeroline=False),
         )
         fig.update_xaxes(rangeslider_visible=False)
-
         st.plotly_chart(fig, use_container_width=True)
+
+        # -------- RECENT TRADE HISTORY --------
+        st.markdown("**Recent Trade History**")
+        recent = get_recent_trades(symbol)
+        if recent.empty:
+            st.caption("No completed trades found for this symbol.")
+        else:
+            recent['time'] = pd.to_datetime(recent['time'], unit='s')
+            recent['type'] = recent['type'].map({0: "BUY", 1: "SELL"}).fillna(recent['type'])
+            st.dataframe(recent, use_container_width=True)
 
 # -------- TIMESTAMP --------
 st.divider()

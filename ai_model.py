@@ -5,5 +5,5 @@ import numpy as np # Good to have for formatting data for ML
 try:
     model = joblib.load("model.pkl")
 except FileNotFoundError:
-    st.error("🚨 model.pkl not found! Make sure it is in the same folder as this script.")
-    st.stop()
+    print("🚨 model.pkl not found! Make sure it is in the same folder as this script.")
+    exit(1)

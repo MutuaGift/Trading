@@ -1,103 +1,98 @@
 from mt5linux import MetaTrader5 as mt5
 import pandas as pd
 
+from config import SYMBOLS, MAGIC, DEVIATION
+
+# -------- TIMEFRAME MAP --------
+TIMEFRAME_MAP = {
+    "M1":  mt5.TIMEFRAME_M1,
+    "M5":  mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": mt5.TIMEFRAME_M30,
+    "H1":  mt5.TIMEFRAME_H1,
+    "H4":  mt5.TIMEFRAME_H4,
+    "D1":  mt5.TIMEFRAME_D1,
+}
+
 mt5.initialize()
 
-symbol = "EURUSD"
-lot = 0.01
+for symbol, cfg in SYMBOLS.items():
+    lot       = cfg["lot"]
+    sl_pips   = cfg["sl_pips"]
+    tp_pips   = cfg["tp_pips"]
+    timeframe = TIMEFRAME_MAP.get(cfg["timeframe"], mt5.TIMEFRAME_M15)
 
-# SL = 20 pips, TP = 40 pips (5-digit broker: 1 pip = 0.0001 * 10 points = 0.00010)
-SL_PIPS = 0.0020
-TP_PIPS = 0.0040
+    print(f"\n--- Checking {symbol} ---")
 
-# -------- OPEN POSITION GUARD --------
-positions = mt5.positions_get(symbol=symbol)
-if positions is not None and len(positions) > 0:
-    print(f"Position already open for {symbol}. Skipping new trade.")
-    mt5.shutdown()
-    exit()
+    # -------- OPEN POSITION GUARD --------
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is not None and len(positions) > 0:
+        print(f"[{symbol}] Position already open. Skipping.")
+        continue
 
-# -------- GET MARKET DATA --------
-rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 100)
-if rates is None:
-    print("ERROR: Could not retrieve market data.")
-    mt5.shutdown()
-    exit()
+    # -------- GET MARKET DATA --------
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 100)
+    if rates is None:
+        print(f"[{symbol}] ERROR: Could not retrieve market data.")
+        continue
 
-df = pd.DataFrame(rates)
+    df = pd.DataFrame(rates)
+    df['ma10'] = df['close'].rolling(10).mean()
+    df['ma20'] = df['close'].rolling(20).mean()
+    df.dropna(inplace=True)
 
-# calculate moving averages
-df['ma10'] = df['close'].rolling(10).mean()
-df['ma20'] = df['close'].rolling(20).mean()
+    if df.empty:
+        print(f"[{symbol}] Not enough data to compute MAs.")
+        continue
 
-# get latest values
-last = df.iloc[-1]
+    last = df.iloc[-1]
 
-# get price
-tick = mt5.symbol_info_tick(symbol)
-if tick is None:
-    print("ERROR: Could not get tick data. Market may be closed.")
-    mt5.shutdown()
-    exit()
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        print(f"[{symbol}] ERROR: Could not get tick data. Market may be closed.")
+        continue
 
-# BUY condition
-if last['ma10'] > last['ma20']:
-    print("BUY SIGNAL")
-    price = tick.ask
-    sl = price - SL_PIPS
-    tp = price + TP_PIPS
+    # -------- SIGNAL LOGIC --------
+    if last['ma10'] > last['ma20']:
+        print(f"[{symbol}] BUY SIGNAL")
+        price = tick.ask
+        sl = price - sl_pips
+        tp = price + tp_pips
+        order_type = mt5.ORDER_TYPE_BUY
+        comment = "MA Buy"
 
+    elif last['ma10'] < last['ma20']:
+        print(f"[{symbol}] SELL SIGNAL")
+        price = tick.bid
+        sl = price + sl_pips
+        tp = price - tp_pips
+        order_type = mt5.ORDER_TYPE_SELL
+        comment = "MA Sell"
+
+    else:
+        print(f"[{symbol}] MA10 == MA20: No signal. Staying flat.")
+        continue
+
+    # -------- PLACE ORDER --------
     request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": lot,
-        "type": mt5.ORDER_TYPE_BUY,
-        "price": price,
-        "sl": sl,
-        "tp": tp,
-        "deviation": 10,
-        "magic": 100,
-        "comment": "MA Buy",
-        "type_time": mt5.ORDER_TIME_GTC,
+        "action":      mt5.TRADE_ACTION_DEAL,
+        "symbol":      symbol,
+        "volume":      lot,
+        "type":        order_type,
+        "price":       price,
+        "sl":          sl,
+        "tp":          tp,
+        "deviation":   DEVIATION,
+        "magic":       MAGIC,
+        "comment":     comment,
+        "type_time":   mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"Order FAILED: {result.comment} (retcode={result.retcode})")
+        print(f"[{symbol}] Order FAILED: {result.comment} (retcode={result.retcode})")
     else:
-        print(f"BUY order placed at {price} | SL={sl} | TP={tp}")
-
-# SELL condition
-elif last['ma10'] < last['ma20']:
-    print("SELL SIGNAL")
-    price = tick.bid
-    sl = price + SL_PIPS
-    tp = price - TP_PIPS
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": lot,
-        "type": mt5.ORDER_TYPE_SELL,
-        "price": price,
-        "sl": sl,
-        "tp": tp,
-        "deviation": 10,
-        "magic": 100,
-        "comment": "MA Sell",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-
-    result = mt5.order_send(request)
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"Order FAILED: {result.comment} (retcode={result.retcode})")
-    else:
-        print(f"SELL order placed at {price} | SL={sl} | TP={tp}")
-
-# FLAT condition — MAs are equal, stay out
-else:
-    print("MA10 == MA20: No signal. Staying flat.")
+        print(f"[{symbol}] Order placed at {price} | SL={sl} | TP={tp}")
 
 mt5.shutdown()

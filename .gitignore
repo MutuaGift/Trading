@@ -1,4 +1,7 @@
 model.pkl
+*_model.pkl
+*_data.csv
+market_data.csv
 *.log
 venv/
 __pycache__/
