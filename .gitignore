@@ -1,8 +1,8 @@
 model.pkl
-*_model.pkl
 market_data.csv
 *.log
 venv/
 __pycache__/
 .env
 *.pyc
+config.py
