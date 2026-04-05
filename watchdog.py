@@ -3,9 +3,10 @@ watchdog.py – Starts and monitors every component of the trading stack.
 
 Components managed
 ──────────────────
-  1. MetaTrader 5   (Wine on DISPLAY=:0, minimized, runs mt5_bridge_ea.mq5)
-  2. real_bot.py    (AI trading loop, uses mt5_file_bridge.py)
-  3. dashboard.py   (Streamlit UI)
+  1. MetaTrader 5      (Wine on DISPLAY=:0, minimized)
+  2. mt5linux bridge   (Wine Python, port 18812)
+  3. real_bot.py       (AI trading loop)
+  4. dashboard.py      (Streamlit UI)
 
 Behaviour
 ─────────
@@ -92,6 +93,15 @@ if __name__ == "__main__":
             "startup_delay": 45,   # MT5 needs time to start, log in, and load EA
             "use_display":   True,
             "log_file":      LOG_DIR / "mt5.log",
+        },
+        # ── mt5linux bridge ───────────────────────────────────────────────────
+        # Wine Python RPyC server that exposes the MT5 API to real_bot.py.
+        # Must start after MT5 is fully loaded.
+        "bridge": {
+            "cmd":           ["wine", "python", "-m", "mt5linux", "--port", "18812"],
+            "startup_delay": 15,
+            "use_display":   True,
+            "log_file":      LOG_DIR / "bridge.log",
         },
         "bot": {
             "cmd": [VENV_PYTHON, str(SCRIPT_DIR / "real_bot.py")],
@@ -205,14 +215,15 @@ if __name__ == "__main__":
     # Kill any stale Wine / dashboard processes before starting fresh.
     # Killing wineserver ensures MT5 starts in a clean state.
     # Streamlit drifts to port 8502/8503 if 8501 is still bound.
-    logger.info("Clearing any stale MT5 / dashboard / wine processes before startup…")
+    logger.info("Clearing any stale MT5 / bridge / dashboard / wine processes before startup…")
     subprocess.run(["pkill", "-KILL", "-f", "terminal64.exe"], capture_output=True)
+    subprocess.run(["pkill", "-KILL", "-f", "mt5linux"],        capture_output=True)
     subprocess.run(["pkill", "-KILL", "-f", "streamlit"],       capture_output=True)
     subprocess.run(["pkill", "-KILL", "-f", "wine"],            capture_output=True)
     subprocess.run(["pkill", "-KILL",        "wineserver"],     capture_output=True)
     time.sleep(5)  # Give wineserver time to fully release IPC handles
 
-    for component_name in ["mt5", "bot", "dashboard"]:
+    for component_name in ["mt5", "bridge", "bot", "dashboard"]:
         try:
             launch(component_name, wait_after=True)
             logger.info(f"  [{component_name}] started (PID {processes[component_name].pid})")
