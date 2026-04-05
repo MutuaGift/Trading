@@ -44,7 +44,7 @@ start_xvfb() {
     pkill -f "Xvfb ${VIRT_DISPLAY}" 2>/dev/null || true
     rm -f "/tmp/.X${VIRT_DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${VIRT_DISPLAY_NUM}" 2>/dev/null || true
 
-    Xvfb "${VIRT_DISPLAY}" -screen 0 1024x768x24 -nolisten tcp &>/dev/null &
+    Xvfb "${VIRT_DISPLAY}" -screen 0 1024x768x24 +extension GLX -nolisten tcp &>/dev/null &
     XVFB_PID=$!
 
     # Wait up to 3 seconds for the display to be ready
@@ -53,6 +53,13 @@ start_xvfb() {
         sleep 0.5
         waited=$((waited + 1))
     done
+
+    # Software rendering: avoid GPU/Vulkan/DRI3 errors under Xvfb
+    export LIBGL_ALWAYS_SOFTWARE=1
+    export GALLIUM_DRIVER=softpipe
+    export MESA_GL_VERSION_OVERRIDE=3.3
+    # Disable Wine's Vulkan layer entirely (no physical GPU under Xvfb)
+    export WINEDLLOVERRIDES="winevulkan=d;vulkan-1=d"
 
     print_ok "Xvfb started on ${VIRT_DISPLAY} (PID ${XVFB_PID}) — MT5 runs headlessly"
     export VIRT_DISPLAY
