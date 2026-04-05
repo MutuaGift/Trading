@@ -26,6 +26,46 @@ print_ok()     { echo -e "  ${GREEN}✔${RESET}  $1"; }
 print_warn()   { echo -e "  ${YELLOW}⚠${RESET}  $1"; }
 print_err()    { echo -e "  ${RED}✖${RESET}  $1"; }
 
+# ── Xvfb virtual display ──────────────────────────────────────────────────────
+# MT5 runs under Wine and needs a display. We start a private Xvfb instance on
+# :99 so no visible window ever appears on the real desktop (or when headless).
+VIRT_DISPLAY_NUM=99
+VIRT_DISPLAY=":${VIRT_DISPLAY_NUM}"
+XVFB_PID=""
+
+start_xvfb() {
+    # Install Xvfb if missing (Arch Linux)
+    if ! command -v Xvfb &>/dev/null; then
+        print_warn "Xvfb not found. Installing xorg-server-xvfb via pacman…"
+        sudo pacman -S --noconfirm xorg-server-xvfb
+    fi
+
+    # Kill any stale Xvfb on :99
+    pkill -f "Xvfb ${VIRT_DISPLAY}" 2>/dev/null || true
+    rm -f "/tmp/.X${VIRT_DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${VIRT_DISPLAY_NUM}" 2>/dev/null || true
+
+    Xvfb "${VIRT_DISPLAY}" -screen 0 1024x768x24 -nolisten tcp &>/dev/null &
+    XVFB_PID=$!
+
+    # Wait up to 3 seconds for the display to be ready
+    local waited=0
+    until xdpyinfo -display "${VIRT_DISPLAY}" &>/dev/null || [ $waited -ge 3 ]; do
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+
+    print_ok "Xvfb started on ${VIRT_DISPLAY} (PID ${XVFB_PID}) — MT5 runs headlessly"
+    export VIRT_DISPLAY
+}
+
+cleanup() {
+    if [ -n "$XVFB_PID" ]; then
+        kill "$XVFB_PID" 2>/dev/null || true
+        wait "$XVFB_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 print_header ""
 print_header "  AI Trading Bot — Full Stack Launcher"
@@ -55,6 +95,11 @@ if ! command -v wine &>/dev/null; then
     print_warn "wine not found in PATH — MT5 and the bridge will fail to start."
 fi
 
+# Xvfb check (non-fatal here; start_xvfb will install it below)
+if ! command -v Xvfb &>/dev/null; then
+    print_warn "Xvfb not found — will attempt to install automatically."
+fi
+
 # Check at least one model exists
 MODEL_COUNT=$(ls "$SCRIPT_DIR"/*_model.pkl 2>/dev/null | wc -l)
 if [ "$MODEL_COUNT" -eq 0 ]; then
@@ -69,11 +114,14 @@ fi
 # ── Create log directory ──────────────────────────────────────────────────────
 mkdir -p "$SCRIPT_DIR/logs"
 
+# ── Start Xvfb virtual display ────────────────────────────────────────────────
+start_xvfb
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 print_ok "Pre-flight checks passed"
 echo ""
 echo -e "  Components managed by watchdog:"
-echo -e "    ${CYAN}1${RESET}  MetaTrader 5     (Wine)"
+echo -e "    ${CYAN}1${RESET}  MetaTrader 5     (Wine, headless on ${VIRT_DISPLAY})"
 echo -e "    ${CYAN}2${RESET}  mt5linux bridge  (Wine Python)"
 echo -e "    ${CYAN}3${RESET}  real_bot.py      (AI trading loop)"
 echo -e "    ${CYAN}4${RESET}  dashboard.py     (Streamlit UI)"
@@ -86,7 +134,6 @@ echo ""
 print_header "─────────────────────────────────────────────────────"
 echo ""
 
-# ── Hand off to the Python watchdog ──────────────────────────────────────────
-# 'exec' replaces this shell process with Python so that signals (Ctrl-C)
-# go directly to the watchdog, which shuts all children down cleanly.
-exec "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/watchdog.py"
+# ── Launch the Python watchdog ────────────────────────────────────────────────
+# Run as a child (not exec) so the EXIT trap above can kill Xvfb on the way out.
+"$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/watchdog.py"

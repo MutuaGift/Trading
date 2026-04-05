@@ -62,7 +62,9 @@ logger = logging.getLogger("watchdog")
 #   use_display   – inject DISPLAY=:0 (needed for Wine / Wine-based apps)
 #   log_file      – stdout + stderr of the subprocess are appended here
 
-DISPLAY = os.environ.get("DISPLAY", ":0")
+# Use the Xvfb virtual display exported by start.sh (:99).
+# Falls back to DISPLAY, then :99, so Wine components never render on the real desktop.
+DISPLAY = os.environ.get("VIRT_DISPLAY", os.environ.get("DISPLAY", ":99"))
 
 COMPONENTS: dict = {
     "mt5": {
@@ -191,9 +193,10 @@ signal.signal(signal.SIGTERM, shutdown_all)
 
 logger.info("=" * 60)
 logger.info("  Trading Bot Watchdog starting")
-logger.info(f"  Script dir : {SCRIPT_DIR}")
-logger.info(f"  Log dir    : {LOG_DIR}")
-logger.info(f"  Dashboard  : http://localhost:8501")
+logger.info(f"  Script dir   : {SCRIPT_DIR}")
+logger.info(f"  Log dir      : {LOG_DIR}")
+logger.info(f"  Virtual disp : {DISPLAY}  (Wine/MT5 headless)")
+logger.info(f"  Dashboard    : http://localhost:8501")
 logger.info("=" * 60)
 
 for component_name in ["mt5", "bridge", "bot", "dashboard"]:
