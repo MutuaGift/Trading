@@ -3,7 +3,7 @@ watchdog.py – Starts and monitors every component of the trading stack.
 
 Components managed
 ──────────────────
-  1. MetaTrader 5   (Wine + Xvfb, runs mt5_bridge_ea.mq5 for file-based IPC)
+  1. MetaTrader 5   (Wine on DISPLAY=:0, minimized, runs mt5_bridge_ea.mq5)
   2. real_bot.py    (AI trading loop, uses mt5_file_bridge.py)
   3. dashboard.py   (Streamlit UI)
 
@@ -70,42 +70,24 @@ if __name__ == "__main__":
     logger = logging.getLogger("watchdog")
 
     # ── Component definitions ─────────────────────────────────────────────────
-    # Use the Xvfb virtual display exported by start.sh (:99).
-    DISPLAY = os.environ.get("VIRT_DISPLAY", os.environ.get("DISPLAY", ":99"))
+    # Use the real X display so MT5/Wine render on screen.
+    DISPLAY = ":0"
 
     # MT5 login config — Z: drive is Wine's view of the Linux filesystem root
     _mt5_config_linux = SCRIPT_DIR / "mt5_login.ini"
     _mt5_config_wine  = "Z:" + str(_mt5_config_linux).replace("/", "\\")
 
     COMPONENTS: dict = {
-        # ── Xvfb virtual display ──────────────────────────────────────────────
-        # Must be first — bridge/MT5 need DISPLAY=:99 to exist before they start.
-        # Software-rendering flags keep it stable on AMD GPUs without hardware GLX.
-        # +extension GLX is accepted by Xvfb (it provides a software GLX) so Wine
-        # doesn't abort when it probes for GLX support.
-        "xvfb": {
-            "cmd": [
-                "Xvfb", ":99",
-                "-screen", "0", "1024x768x16",
-                "+extension", "GLX",
-                "-ac",
-                "-noreset",
-            ],
-            "startup_delay": 10,
-            "use_display":   False,   # Xvfb IS the display, doesn't use one
-            "extra_env":     {"LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "softpipe"},
-            "log_file":      LOG_DIR / "xvfb.log",
-        },
         # ── MetaTrader 5 terminal ─────────────────────────────────────────────
-        # The mt5_bridge_ea.mq5 Expert Advisor runs inside MT5 and provides a
-        # file-based IPC bridge (MQL5/Files/mt5bridge/).  The native
-        # MetaTrader5.dll IPC is bypassed because it fails under Wine.
+        # Runs on DISPLAY=:0 (real X display) so Wine can auto-login without Xvfb.
+        # The mt5_bridge_ea.mq5 Expert Advisor provides file-based IPC.
         # The /config flag logs in automatically (Wine Z: = Linux /).
         "mt5": {
             "cmd": [
                 "wine",
                 "C:/Program Files/MetaTrader 5/terminal64.exe",
                 f"/config:{_mt5_config_wine}",
+                "/minimized",
             ],
             "startup_delay": 45,   # MT5 needs time to start, log in, and load EA
             "use_display":   True,
@@ -157,12 +139,6 @@ if __name__ == "__main__":
         cfg      = COMPONENTS[name]
         log_path = cfg["log_file"]
         env      = build_env(cfg["use_display"], cfg.get("extra_env"))
-
-        # Xvfb needs any stale X lock files removed before it can bind :99.
-        if name == "xvfb":
-            subprocess.run(["rm", "-f", "/tmp/.X99-lock", "/tmp/.X11-unix/X99"],
-                           capture_output=True)
-            time.sleep(0.5)
 
         logger.info(f"Starting [{name}]: {' '.join(str(c) for c in cfg['cmd'])}")
 
@@ -221,26 +197,22 @@ if __name__ == "__main__":
     logger.info("  Trading Bot Watchdog starting")
     logger.info(f"  Script dir   : {SCRIPT_DIR}")
     logger.info(f"  Log dir      : {LOG_DIR}")
-    logger.info(f"  Virtual disp : {DISPLAY}  (Wine/MT5 headless)")
+    logger.info(f"  Display      : {DISPLAY}  (real X display, MT5 minimized)")
     logger.info(f"  Dashboard    : http://localhost:8501")
     logger.info(f"  MT5 config   : {_mt5_config_linux}")
     logger.info("=" * 60)
 
-    # Kill any stale Wine / dashboard / Xvfb processes before starting fresh.
-    # - Killing wineserver ensures MT5 and the bridge EA start in a clean state.
-    # - Streamlit drifts to port 8502/8503 if 8501 is still bound.
-    # - Xvfb on :99 must be killed and its lock files removed so our managed
-    #   Xvfb instance can bind the socket cleanly.
-    logger.info("Clearing any stale Xvfb / MT5 / dashboard / wine processes before startup…")
-    subprocess.run(["pkill", "-KILL", "-f", "Xvfb :99"],       capture_output=True)
+    # Kill any stale Wine / dashboard processes before starting fresh.
+    # Killing wineserver ensures MT5 starts in a clean state.
+    # Streamlit drifts to port 8502/8503 if 8501 is still bound.
+    logger.info("Clearing any stale MT5 / dashboard / wine processes before startup…")
     subprocess.run(["pkill", "-KILL", "-f", "terminal64.exe"], capture_output=True)
     subprocess.run(["pkill", "-KILL", "-f", "streamlit"],       capture_output=True)
     subprocess.run(["pkill", "-KILL", "-f", "wine"],            capture_output=True)
     subprocess.run(["pkill", "-KILL",        "wineserver"],     capture_output=True)
-    subprocess.run(["rm", "-f", "/tmp/.X99-lock", "/tmp/.X11-unix/X99"], capture_output=True)
     time.sleep(5)  # Give wineserver time to fully release IPC handles
 
-    for component_name in ["xvfb", "mt5", "bot", "dashboard"]:
+    for component_name in ["mt5", "bot", "dashboard"]:
         try:
             launch(component_name, wait_after=True)
             logger.info(f"  [{component_name}] started (PID {processes[component_name].pid})")
@@ -252,7 +224,7 @@ if __name__ == "__main__":
     logger.info("Launching AutoTrading enabler in background (max 8 min wait)…")
     subprocess.Popen(
         [VENV_PYTHON, str(SCRIPT_DIR / "enable_algo_trading.py"), "480"],
-        env={**os.environ, "DISPLAY": DISPLAY, "VIRT_DISPLAY": DISPLAY},
+        env={**os.environ, "DISPLAY": DISPLAY},
     )
 
     logger.info("All components started. Watchdog monitoring loop active.")
@@ -297,19 +269,7 @@ if __name__ == "__main__":
             restart_counts[name] = count + 1
 
             # ── Pre-restart cleanup ───────────────────────────────────────────
-            if name == "xvfb":
-                # Xvfb died — kill Wine/MT5 first so they don't spin with a
-                # broken display, then cascade-restart MT5 after Xvfb recovers.
-                logger.info("Xvfb died — killing Wine/MT5, restarting Xvfb, then MT5…")
-                subprocess.run(["pkill", "-KILL", "-f", "terminal64.exe"], capture_output=True)
-                subprocess.run(["pkill", "-KILL", "-f", "wine"],            capture_output=True)
-                subprocess.run(["pkill", "-KILL",        "wineserver"],     capture_output=True)
-                _mt5_proc = processes.get("mt5")
-                if _mt5_proc and _mt5_proc.poll() is None:
-                    _mt5_proc.terminate()
-                time.sleep(3)
-
-            elif name == "mt5":
+            if name == "mt5":
                 # Kill any stale Wine/wineserver state before restarting MT5.
                 logger.info("Killing wineserver before MT5 restart…")
                 subprocess.run(["pkill", "-KILL", "-f", "terminal64.exe"], capture_output=True)
@@ -327,24 +287,7 @@ if __name__ == "__main__":
                 if name == "mt5":
                     subprocess.Popen(
                         [VENV_PYTHON, str(SCRIPT_DIR / "enable_algo_trading.py"), "480"],
-                        env={**os.environ, "DISPLAY": DISPLAY, "VIRT_DISPLAY": DISPLAY},
+                        env={**os.environ, "DISPLAY": DISPLAY},
                     )
             except Exception as exc:
                 logger.error(f"Failed to restart [{name}]: {exc}")
-
-            # ── Cascade restart after Xvfb recovery ──────────────────────────
-            if name == "xvfb" and not _shutting_down:
-                logger.info("Xvfb recovered — cascade-restarting MT5…")
-                subprocess.run(["pkill", "-KILL", "-f", "terminal64.exe"], capture_output=True)
-                subprocess.run(["pkill", "-KILL", "-f", "wine"],            capture_output=True)
-                subprocess.run(["pkill", "-KILL",        "wineserver"],     capture_output=True)
-                time.sleep(5)
-                try:
-                    launch("mt5", wait_after=True)   # waits 35 s
-                    restart_counts["mt5"] = restart_counts.get("mt5", 0) + 1
-                    logger.info(
-                        f"[mt5] cascade-restarted after Xvfb recovery "
-                        f"(PID {processes['mt5'].pid})"
-                    )
-                except Exception as exc:
-                    logger.error(f"Failed to cascade-restart mt5 after Xvfb recovery: {exc}")
