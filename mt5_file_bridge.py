@@ -240,6 +240,60 @@ class MT5FileBridge:
         parts = self._first_parts(lines)
         return parts[0] == "OK"
 
+    def account_info(self):
+        """Return account info object with balance/equity/etc., or None on failure."""
+        lines = self._send("ACCOUNT_INFO", timeout=5)
+        parts = self._first_parts(lines)
+        if parts[0] != "OK" or len(parts) < 9:
+            return None
+        return _AccountInfo(
+            balance     = float(parts[1]),
+            equity      = float(parts[2]),
+            margin      = float(parts[3]),
+            margin_free = float(parts[4]),
+            profit      = float(parts[5]),
+            login       = int(parts[6]),
+            currency    = parts[7],
+            leverage    = int(parts[8]),
+            name        = parts[9] if len(parts) > 9 else "",
+        )
+
+    def positions_total(self) -> int:
+        """Return count of currently open positions."""
+        positions = self.positions_get()
+        return len(positions) if positions is not None else 0
+
+    def history_deals_get(self, date_from, date_to, group: str = None):
+        """Return list of historical deals between date_from and date_to."""
+        import calendar
+        from_ts = int(calendar.timegm(date_from.timetuple()))
+        to_ts   = int(calendar.timegm(date_to.timetuple()))
+        lines   = self._send(f"HISTORY_DEALS|{from_ts}|{to_ts}", timeout=15)
+        parts0  = self._first_parts(lines)
+        if parts0[0] != "OK":
+            return None
+
+        deals = []
+        for line in lines[1:]:
+            if line == "END":
+                break
+            cols = line.split("|")
+            if len(cols) < 7:
+                continue
+            sym = cols[1]
+            if group and group.strip("*") not in sym:
+                continue
+            deals.append(_Deal(
+                ticket = int(cols[0]),
+                symbol = sym,
+                type   = int(cols[2]),
+                volume = float(cols[3]),
+                price  = float(cols[4]),
+                profit = float(cols[5]),
+                time   = int(cols[6]),
+            ))
+        return deals if deals else None
+
 
 # ── Simple namespace objects returned by the API ──────────────────────────────
 
@@ -282,3 +336,34 @@ class _OrderResult:
         self.retcode = retcode
         self.order   = order
         self.comment = comment
+
+
+class _AccountInfo:
+    __slots__ = ("balance", "equity", "margin", "margin_free",
+                 "profit", "login", "currency", "leverage", "name")
+    def __init__(self, balance, equity, margin, margin_free,
+                 profit, login, currency, leverage, name):
+        self.balance     = balance
+        self.equity      = equity
+        self.margin      = margin
+        self.margin_free = margin_free
+        self.profit      = profit
+        self.login       = login
+        self.currency    = currency
+        self.leverage    = leverage
+        self.name        = name
+
+
+class _Deal:
+    __slots__ = ("ticket", "symbol", "type", "volume", "price", "profit", "time")
+    def __init__(self, ticket, symbol, type, volume, price, profit, time):
+        self.ticket = ticket
+        self.symbol = symbol
+        self.type   = type
+        self.volume = volume
+        self.price  = price
+        self.profit = profit
+        self.time   = time
+
+    def _asdict(self):
+        return {s: getattr(self, s) for s in self.__slots__}

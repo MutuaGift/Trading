@@ -9,10 +9,10 @@ import os
 from config import SYMBOLS, CONFIDENCE_THRESHOLD, MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
 
 try:
-    from mt5linux import MetaTrader5
-    mt5 = MetaTrader5(host='localhost', port=18812)
+    from mt5_file_bridge import MT5FileBridge
+    mt5 = MT5FileBridge()
 except Exception as _e:
-    st.error(f"Cannot connect to MT5 bridge on port 18812: {_e}")
+    st.error(f"Cannot load MT5 file bridge: {_e}")
     st.stop()
 
 # -------- PAGE CONFIG & STYLING --------
@@ -79,8 +79,8 @@ st.divider()
 # -------- ACCOUNT INFO --------
 account = mt5.account_info()
 col1, col2, col3 = st.columns(3)
-col1.metric("Balance",     f"${account.balance:.2f}")
-col2.metric("Equity",      f"${account.equity:.2f}")
+col1.metric("Balance",     f"${account.balance:.2f}" if account else "—")
+col2.metric("Equity",      f"${account.equity:.2f}"  if account else "—")
 col3.metric("Open Trades", mt5.positions_total())
 st.divider()
 
@@ -135,7 +135,7 @@ def get_recent_trades(symbol, n=5):
     )
     if history is None or len(history) == 0:
         return pd.DataFrame()
-    df = pd.DataFrame(list(history), columns=history[0]._asdict().keys())
+    df = pd.DataFrame([d._asdict() for d in history])
     df = df[df['symbol'] == symbol].tail(n)
     return df[['time', 'type', 'volume', 'price', 'profit']].copy() if not df.empty else pd.DataFrame()
 
