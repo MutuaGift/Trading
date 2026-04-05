@@ -10,9 +10,20 @@
 #
 # The watchdog monitors all four processes and restarts any that crash.
 # Press Ctrl-C here to shut everything down cleanly.
+#
+# Flags:
+#   --force   Kill any running instance and restart fresh.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
+
+# ── AMD / software-rendering env vars (must be first — inherited by ALL children)
+# Set these before ANY process starts so Wine, Xvfb, and the bridge all see them.
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=softpipe
+export MESA_GL_VERSION_OVERRIDE=3.3
+export MESA_LOADER_DRIVER_OVERRIDE=softpipe
+export WINEDLLOVERRIDES="winevulkan=d;vulkan-1=d"
 
 # Resolve the directory containing this script regardless of where it is called from
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,50 +37,68 @@ print_ok()     { echo -e "  ${GREEN}✔${RESET}  $1"; }
 print_warn()   { echo -e "  ${YELLOW}⚠${RESET}  $1"; }
 print_err()    { echo -e "  ${RED}✖${RESET}  $1"; }
 
-# ── Xvfb virtual display ──────────────────────────────────────────────────────
-# MT5 runs under Wine and needs a display. We start a private Xvfb instance on
-# :99 so no visible window ever appears on the real desktop (or when headless).
-VIRT_DISPLAY_NUM=99
-VIRT_DISPLAY=":${VIRT_DISPLAY_NUM}"
-XVFB_PID=""
+# ── Lock file (prevents multiple simultaneous stack instances) ────────────────
+LOCK_FILE="/tmp/trading_bot_$(whoami).lock"
+FORCE=0
+for arg in "$@"; do
+    [[ "$arg" == "--force" ]] && FORCE=1
+done
 
-start_xvfb() {
-    # Install Xvfb if missing (Arch Linux)
-    if ! command -v Xvfb &>/dev/null; then
-        print_warn "Xvfb not found. Installing xorg-server-xvfb via pacman…"
-        sudo pacman -S --noconfirm xorg-server-xvfb
-    fi
-
+kill_existing_stack() {
+    print_warn "Stopping any running trading stack processes..."
+    # Kill in reverse dependency order: bot → bridge → MT5 → watchdog
+    pkill -TERM -f "real_bot.py"     2>/dev/null || true
+    pkill -TERM -f "mt5linux"        2>/dev/null || true
+    pkill -TERM -f "terminal64.exe"  2>/dev/null || true
+    pkill -TERM -f "watchdog.py"     2>/dev/null || true
+    pkill -TERM -f "streamlit.*dashboard" 2>/dev/null || true
+    sleep 3
+    # Force-kill anything still alive (including all wine/wineserver processes)
+    pkill -KILL -f "real_bot.py"     2>/dev/null || true
+    pkill -KILL -f "mt5linux"        2>/dev/null || true
+    pkill -KILL -f "terminal64.exe"  2>/dev/null || true
+    pkill -KILL -f "watchdog.py"     2>/dev/null || true
+    pkill -KILL -f "streamlit"       2>/dev/null || true
+    pkill -KILL -f "wine"            2>/dev/null || true
+    pkill -KILL    "wineserver"      2>/dev/null || true
     # Kill any stale Xvfb on :99
-    pkill -f "Xvfb ${VIRT_DISPLAY}" 2>/dev/null || true
-    rm -f "/tmp/.X${VIRT_DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${VIRT_DISPLAY_NUM}" 2>/dev/null || true
-
-    Xvfb "${VIRT_DISPLAY}" -screen 0 1024x768x24 +extension GLX -nolisten tcp &>/dev/null &
-    XVFB_PID=$!
-
-    # Wait up to 3 seconds for the display to be ready
-    local waited=0
-    until xdpyinfo -display "${VIRT_DISPLAY}" &>/dev/null || [ $waited -ge 3 ]; do
-        sleep 0.5
-        waited=$((waited + 1))
-    done
-
-    # Software rendering: avoid GPU/Vulkan/DRI3 errors under Xvfb
-    export LIBGL_ALWAYS_SOFTWARE=1
-    export GALLIUM_DRIVER=softpipe
-    export MESA_GL_VERSION_OVERRIDE=3.3
-    # Disable Wine's Vulkan layer entirely (no physical GPU under Xvfb)
-    export WINEDLLOVERRIDES="winevulkan=d;vulkan-1=d"
-
-    print_ok "Xvfb started on ${VIRT_DISPLAY} (PID ${XVFB_PID}) — MT5 runs headlessly"
-    export VIRT_DISPLAY
+    pkill -KILL -f "Xvfb :99"        2>/dev/null || true
+    rm -f "/tmp/.X99-lock" "/tmp/.X11-unix/X99" 2>/dev/null || true
+    rm -f "/tmp/trading_watchdog.lock"           2>/dev/null || true
+    sleep 2
+    print_ok "Existing stack stopped."
 }
 
-cleanup() {
-    if [ -n "$XVFB_PID" ]; then
-        kill "$XVFB_PID" 2>/dev/null || true
-        wait "$XVFB_PID" 2>/dev/null || true
+if [ -f "$LOCK_FILE" ]; then
+    OLD_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        if [ "$FORCE" -eq 1 ]; then
+            print_warn "Existing instance found (PID $OLD_PID). --force: killing it."
+            kill_existing_stack
+            kill "$OLD_PID" 2>/dev/null || true
+            rm -f "$LOCK_FILE"
+        else
+            print_err "Trading stack is already running (start.sh PID $OLD_PID)."
+            print_err "Use --force to kill it and restart:  $0 --force"
+            exit 1
+        fi
+    else
+        print_warn "Stale lock file found (PID ${OLD_PID:-unknown} not running). Cleaning up..."
+        kill_existing_stack
+        rm -f "$LOCK_FILE"
     fi
+fi
+
+# Write this script's PID as the lock
+echo $$ > "$LOCK_FILE"
+
+# Xvfb is now managed entirely by watchdog.py (monitored + auto-restarted).
+# Export VIRT_DISPLAY so watchdog knows which display number to use.
+VIRT_DISPLAY=":99"
+export VIRT_DISPLAY
+
+cleanup() {
+    rm -f "$LOCK_FILE"
 }
 trap cleanup EXIT INT TERM
 
@@ -102,9 +131,9 @@ if ! command -v wine &>/dev/null; then
     print_warn "wine not found in PATH — MT5 and the bridge will fail to start."
 fi
 
-# Xvfb check (non-fatal here; start_xvfb will install it below)
+# Xvfb check (watchdog starts and monitors Xvfb; warn if missing)
 if ! command -v Xvfb &>/dev/null; then
-    print_warn "Xvfb not found — will attempt to install automatically."
+    print_warn "Xvfb not found — install it: sudo pacman -S xorg-server-xvfb"
 fi
 
 # Check at least one model exists
@@ -115,21 +144,19 @@ fi
 
 if [ "$ERRORS" -gt 0 ]; then
     print_err "Aborting due to the errors above."
+    rm -f "$LOCK_FILE"
     exit 1
 fi
 
 # ── Create log directory ──────────────────────────────────────────────────────
 mkdir -p "$SCRIPT_DIR/logs"
 
-# ── Start Xvfb virtual display ────────────────────────────────────────────────
-start_xvfb
-
 # ── Summary ───────────────────────────────────────────────────────────────────
 print_ok "Pre-flight checks passed"
 echo ""
-echo -e "  Components managed by watchdog:"
-echo -e "    ${CYAN}1${RESET}  MetaTrader 5     (Wine, headless on ${VIRT_DISPLAY})"
-echo -e "    ${CYAN}2${RESET}  mt5linux bridge  (Wine Python)"
+echo -e "  Components managed by watchdog (auto-restarted on crash):"
+echo -e "    ${CYAN}1${RESET}  Xvfb             (virtual display ${VIRT_DISPLAY}, software GL)"
+echo -e "    ${CYAN}2${RESET}  mt5linux bridge  (Wine Python, port 18812 — starts MT5 internally)"
 echo -e "    ${CYAN}3${RESET}  real_bot.py      (AI trading loop)"
 echo -e "    ${CYAN}4${RESET}  dashboard.py     (Streamlit UI)"
 echo ""
@@ -142,5 +169,4 @@ print_header "──────────────────────
 echo ""
 
 # ── Launch the Python watchdog ────────────────────────────────────────────────
-# Run as a child (not exec) so the EXIT trap above can kill Xvfb on the way out.
 "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/watchdog.py"

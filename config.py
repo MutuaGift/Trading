@@ -1,13 +1,7 @@
 # All trading settings live here. Edit this file to change bot behavior.
 
 SYMBOLS = {
-    "BTCUSD": {
-        "lot":          0.01,
-        "sl_pips":      500.0,     # 500 pips (BTC is extremely volatile)
-        "tp_pips":      1000.0,    # 1000 pips
-        "timeframe":    "M15",
-        "market_24_7":  True,      # BTC trades around the clock — ignore forex hours
-    },
+    # BTCUSD, USOIL, UKOIL not offered by HFMarketsKE-Demo2 — omitted
     "EURUSD": {
         "lot":          0.10,
         "sl_pips":      50.0,
@@ -30,20 +24,6 @@ SYMBOLS = {
         "market_24_7":  False,
     },
     "GBPUSD": {
-        "lot":          0.01,
-        "sl_pips":      50.0,
-        "tp_pips":      100.0,
-        "timeframe":    "M15",
-        "market_24_7":  False,
-    },
-    "USOIL": {
-        "lot":          0.01,
-        "sl_pips":      50.0,
-        "tp_pips":      100.0,
-        "timeframe":    "M15",
-        "market_24_7":  False,
-    },
-    "UKOIL": {
         "lot":          0.01,
         "sl_pips":      50.0,
         "tp_pips":      100.0,

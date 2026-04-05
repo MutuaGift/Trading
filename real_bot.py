@@ -14,8 +14,8 @@ Resilience features
 • Notifications   : desktop popup (notify-send) + trades.log on every open/close.
 """
 
-from mt5linux import MetaTrader5
-mt5 = MetaTrader5(host='localhost', port=18812)
+from mt5_file_bridge import MT5FileBridge
+mt5 = MT5FileBridge()
 import pandas as pd
 import numpy as np
 import joblib
@@ -165,15 +165,38 @@ def should_check_symbol(symbol: str, cfg: dict) -> bool:
 # MT5 connection helpers
 # ═════════════════════════════════════════════════════════════════════════════
 
+MT5_TERMINAL_PATH = "C:/Program Files/MetaTrader 5/terminal64.exe"
+MT5_INIT_TIMEOUT  = 60000  # ms — allows terminal to start AND log into broker
+
+
 def connect_mt5() -> bool:
-    """Initialize MT5 connection with credentials and retry logic."""
+    """Initialize MT5 connection with credentials and retry logic.
+
+    MetaTrader5.initialize() must START terminal64.exe itself (via the bridge's
+    Wine Python process) to establish the IPC channel.  Passing the terminal
+    path lets the extension find and launch it; the 60-second timeout gives the
+    terminal enough time to connect to the broker before declaring failure.
+    """
     for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
+        # Ensure clean state: shut down any previous (failed) terminal before
+        # each attempt so the extension can start a fresh instance.
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+
         logger.info(
             f"MT5 initialize attempt {attempt}/{MAX_RECONNECT_ATTEMPTS} "
             f"(login={MT5_LOGIN}, server={MT5_SERVER})…"
         )
         try:
-            ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+            ok = mt5.initialize(
+                MT5_TERMINAL_PATH,
+                login=MT5_LOGIN,
+                password=MT5_PASSWORD,
+                server=MT5_SERVER,
+                timeout=MT5_INIT_TIMEOUT,
+            )
         except Exception as exc:
             logger.error(
                 f"MT5 initialize raised an exception on attempt "
@@ -187,6 +210,12 @@ def connect_mt5() -> bool:
                 f"MT5 Initialize SUCCESS — account={MT5_LOGIN}, server={MT5_SERVER}. "
                 f"Trading symbols: {list(models.keys())}"
             )
+            # Ensure all configured symbols are subscribed in Market Watch
+            for sym in models:
+                if mt5.symbol_select(sym, True):
+                    logger.info(f"  [{sym}] confirmed in Market Watch.")
+                else:
+                    logger.warning(f"  [{sym}] symbol_select failed — symbol may not be offered by broker.")
             return True
 
         error = mt5.last_error()

@@ -1,5 +1,4 @@
 import streamlit as st
-from mt5linux import MetaTrader5 as mt5
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
@@ -7,7 +6,14 @@ import joblib
 import numpy as np
 import os
 
-from config import SYMBOLS, CONFIDENCE_THRESHOLD
+from config import SYMBOLS, CONFIDENCE_THRESHOLD, MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
+
+try:
+    from mt5linux import MetaTrader5
+    mt5 = MetaTrader5(host='localhost', port=18812)
+except Exception as _e:
+    st.error(f"Cannot connect to MT5 bridge on port 18812: {_e}")
+    st.stop()
 
 # -------- PAGE CONFIG & STYLING --------
 st.set_page_config(page_title="AI Trading Dashboard", layout="wide")
@@ -49,9 +55,23 @@ for symbol in SYMBOLS:
         st.warning(f"No model file for {symbol} ({model_file}). Train models first.")
 
 # -------- INIT MT5 --------
-if not mt5.initialize():
-    st.error("MT5 not connected")
+try:
+    _ok = mt5.initialize(
+        "C:/Program Files/MetaTrader 5/terminal64.exe",
+        login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER,
+        timeout=60000,
+    )
+except Exception as _e:
+    st.error(f"MT5 initialize raised an exception: {_e}")
     st.stop()
+else:
+    if not _ok:
+        try:
+            _err = mt5.last_error()
+        except Exception:
+            _err = ("unknown", "could not retrieve error")
+        st.error(f"MT5 initialize failed — code={_err[0]}, message='{_err[1]}'")
+        st.stop()
 
 st.title("AI PRO Trading Terminal")
 st.divider()
