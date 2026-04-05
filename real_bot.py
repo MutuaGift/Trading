@@ -14,7 +14,8 @@ Resilience features
 • Notifications   : desktop popup (notify-send) + trades.log on every open/close.
 """
 
-from mt5linux import MetaTrader5 as mt5
+from mt5linux import MetaTrader5
+mt5 = MetaTrader5(host='localhost', port=18812)
 import pandas as pd
 import numpy as np
 import joblib
@@ -167,17 +168,39 @@ def should_check_symbol(symbol: str, cfg: dict) -> bool:
 def connect_mt5() -> bool:
     """Initialize MT5 connection with credentials and retry logic."""
     for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
-        if mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
+        logger.info(
+            f"MT5 initialize attempt {attempt}/{MAX_RECONNECT_ATTEMPTS} "
+            f"(login={MT5_LOGIN}, server={MT5_SERVER})…"
+        )
+        try:
+            ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+        except Exception as exc:
+            logger.error(
+                f"MT5 initialize raised an exception on attempt "
+                f"{attempt}/{MAX_RECONNECT_ATTEMPTS}: {exc}. "
+                f"Is the mt5linux bridge running?"
+            )
+            ok = False
+
+        if ok:
             logger.info(
-                f"Connected to MT5 (account={MT5_LOGIN}, server={MT5_SERVER}). "
+                f"MT5 Initialize SUCCESS — account={MT5_LOGIN}, server={MT5_SERVER}. "
                 f"Trading symbols: {list(models.keys())}"
             )
             return True
+
+        error = mt5.last_error()
         logger.warning(
-            f"MT5 connection attempt {attempt}/{MAX_RECONNECT_ATTEMPTS} failed "
-            f"(error: {mt5.last_error()}). Retrying in {RECONNECT_DELAY}s…"
+            f"MT5 Initialize FAILED on attempt {attempt}/{MAX_RECONNECT_ATTEMPTS} "
+            f"— error code={error[0]}, message='{error[1]}'. "
+            f"Retrying in {RECONNECT_DELAY}s…"
         )
         time.sleep(RECONNECT_DELAY)
+
+    logger.error(
+        f"MT5 Initialize FAILED after all {MAX_RECONNECT_ATTEMPTS} attempts. "
+        f"Last error: {mt5.last_error()}"
+    )
     return False
 
 

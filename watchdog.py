@@ -74,7 +74,7 @@ COMPONENTS: dict = {
         "log_file":      LOG_DIR / "mt5.log",
     },
     "bridge": {
-        "cmd":           ["wine", "python", "-m", "mt5linux"],
+        "cmd":           ["wine", "python", "-m", "mt5linux", "18812"],
         "startup_delay": 10,
         "use_display":   True,
         "log_file":      LOG_DIR / "bridge.log",
