@@ -9,10 +9,9 @@ import os
 from config import SYMBOLS, CONFIDENCE_THRESHOLD, MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
 
 try:
-    from mt5_file_bridge import MT5FileBridge
-    mt5 = MT5FileBridge()
-except Exception as _e:
-    st.error(f"Cannot load MT5 file bridge: {_e}")
+    import MetaTrader5 as mt5
+except ImportError as _e:
+    st.error(f"Cannot import MetaTrader5: {_e}. Install with: pip install MetaTrader5")
     st.stop()
 
 # -------- PAGE CONFIG & STYLING --------

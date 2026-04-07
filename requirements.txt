@@ -1,4 +1,4 @@
-mt5linux
+MetaTrader5
 pandas
 numpy
 scikit-learn
@@ -6,4 +6,4 @@ joblib
 streamlit
 requests
 plotly
-ccxt
+plyer

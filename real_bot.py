@@ -1,5 +1,5 @@
 """
-real_bot.py – Autonomous AI trading bot for MT5 (via mt5linux bridge).
+real_bot.py – Autonomous AI trading bot using the native MetaTrader5 library.
 
 Resilience features
 ───────────────────
@@ -11,11 +11,10 @@ Resilience features
 • Closed-trade     : tracks open positions by ticket; emits a notification +
   detection         trade-log entry whenever a position is closed (SL/TP hit,
                     manual close, etc.).
-• Notifications   : desktop popup (notify-send) + trades.log on every open/close.
+• Notifications   : Windows desktop toast (plyer) + trades.log on every open/close.
 """
 
-from mt5_file_bridge import MT5FileBridge
-mt5 = MT5FileBridge()
+import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 import joblib
@@ -172,10 +171,9 @@ MT5_INIT_TIMEOUT  = 60000  # ms — allows terminal to start AND log into broker
 def connect_mt5() -> bool:
     """Initialize MT5 connection with credentials and retry logic.
 
-    MetaTrader5.initialize() must START terminal64.exe itself (via the bridge's
-    Wine Python process) to establish the IPC channel.  Passing the terminal
-    path lets the extension find and launch it; the 60-second timeout gives the
-    terminal enough time to connect to the broker before declaring failure.
+    MetaTrader5.initialize() will launch terminal64.exe if it is not already
+    running.  Passing the terminal path lets the library find it; the 60-second
+    timeout gives the terminal enough time to connect to the broker.
     """
     for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
         # Ensure clean state: shut down any previous (failed) terminal before
@@ -201,7 +199,7 @@ def connect_mt5() -> bool:
             logger.error(
                 f"MT5 initialize raised an exception on attempt "
                 f"{attempt}/{MAX_RECONNECT_ATTEMPTS}: {exc}. "
-                f"Is the mt5linux bridge running?"
+                f"Is MetaTrader5 installed? (pip install MetaTrader5)"
             )
             ok = False
 
@@ -380,7 +378,7 @@ def refresh_position_tracker() -> None:
 if not connect_mt5():
     logger.error(
         "Cannot connect to MT5 after all retries. "
-        "Make sure the mt5linux bridge is running."
+        "Make sure MetaTrader5 is installed and terminal64.exe can start."
     )
     sys.exit(1)
 
